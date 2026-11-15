@@ -186,6 +186,12 @@ def download_audio(link: str, output_folder: Optional[str] = None) -> Tuple[str,
     os.makedirs(song_dir, exist_ok=True)
     expected_file = os.path.join(song_dir, f"{clean_title} (Original).wav")
 
+    # yt-dlp does not read the FFMPEG_BINARY environment variable set by our
+    # FFmpeg setup. Pass the resolved executable explicitly so downloads also
+    # work when the GUI starts with a restricted PATH (as Tauri often does).
+    from makeitdrumless.ffmpeg.manager import setup_ffmpeg_binary
+    ffmpeg_location = setup_ffmpeg_binary()
+
     ydl_download_opts = {
         'format': 'bestaudio/best',
         'outtmpl': os.path.join(song_dir, f"{clean_title} (Original).%(ext)s"),
@@ -205,6 +211,8 @@ def download_audio(link: str, output_folder: Optional[str] = None) -> Tuple[str,
         'quiet': True,
         'no_warnings': True,
     }
+    if ffmpeg_location:
+        ydl_download_opts['ffmpeg_location'] = ffmpeg_location
 
     # Download
     print(f"⚙️  Downloading audio from URL: {link}...")

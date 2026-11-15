@@ -67,16 +67,34 @@ def download_ffmpeg_windows(dest_folder: str | None = None) -> str:
 
 
 def setup_ffmpeg_binary(project_root: str | None = None) -> str | None:
+    if getattr(sys, "frozen", False):
+        suffix = ".exe" if os.name == "nt" else ""
+        bundled_ffmpeg = Path(sys.executable).resolve().with_name(f"makeitdrumless-ffmpeg{suffix}")
+        if bundled_ffmpeg.is_file():
+            os.environ["PATH"] = str(bundled_ffmpeg.parent) + os.pathsep + os.environ.get("PATH", "")
+            os.environ["FFMPEG_BINARY"] = str(bundled_ffmpeg)
+            return str(bundled_ffmpeg)
+
     if is_ffmpeg_installed():
         return None
-    else:
-        if platform.system() == "Windows":
-            ffmpeg_bin = download_ffmpeg_windows()
-            os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ.get("PATH", "")
-            os.environ["FFMPEG_BINARY"] = os.path.join(ffmpeg_bin, "ffmpeg.exe")
-            return os.environ["FFMPEG_BINARY"]
-        else:
-            print("❌ ffmpeg not found in PATH.")
-            print("💡 On macOS, run: brew install ffmpeg")
-            print("💡 On Linux, run: sudo apt install ffmpeg")
-            sys.exit(1)
+
+    # imageio-ffmpeg distributes a static executable for the current platform;
+    # PyInstaller can collect it into the one-file CLI/worker bundle.
+    try:
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        os.environ["PATH"] = str(Path(ffmpeg_exe).parent) + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FFMPEG_BINARY"] = ffmpeg_exe
+        return ffmpeg_exe
+    except (ImportError, RuntimeError, OSError):
+        pass
+
+    if platform.system() == "Windows":
+        ffmpeg_bin = download_ffmpeg_windows()
+        os.environ["PATH"] = ffmpeg_bin + os.pathsep + os.environ.get("PATH", "")
+        os.environ["FFMPEG_BINARY"] = os.path.join(ffmpeg_bin, "ffmpeg.exe")
+        return os.environ["FFMPEG_BINARY"]
+
+    print("❌ FFmpeg could not be found or loaded.")
+    print("💡 Install FFmpeg or reinstall MakeItDrumless with its bundled media tools.")
+    sys.exit(1)

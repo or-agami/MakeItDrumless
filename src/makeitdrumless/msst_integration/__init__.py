@@ -8,7 +8,14 @@ from .models import (
     get_model_cache_dir,
     is_model_downloaded,
 )
-from .inference import separate_stems_msst
+
+
+def __getattr__(name):
+    if name == "separate_stems_msst":
+        from .inference import separate_stems_msst
+        return separate_stems_msst
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "get_optimal_device",

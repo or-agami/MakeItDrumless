@@ -4,34 +4,14 @@ import argparse
 import time
 import shutil
 import signal
-import atexit
 import warnings
+import json
 from pathlib import Path
 
 # Silence multiprocessing resource tracker shutdown warnings during abrupt cancellation
 warnings.filterwarnings("ignore", category=UserWarning, module="multiprocessing.resource_tracker")
 warnings.filterwarnings("ignore", message=".*resource_tracker:.*")
 
-from makeitdrumless.msst_integration.models import (
-    list_available_models,
-    download_model_preset,
-    normalize_preset_name,
-    MODEL_REGISTRY,
-)
-from makeitdrumless.msst_integration.inference import separate_stems_msst
-from makeitdrumless.audio.downloader import (
-    get_audio_input,
-    get_default_output_base,
-    clean_audio_title,
-    parse_artist_title,
-)
-from makeitdrumless.audio.processing import (
-    mix_stems_without_drums,
-    set_mp3_metadata,
-    ensemble_stems,
-)
-from makeitdrumless.ffmpeg.manager import setup_ffmpeg_binary
-from makeitdrumless.ytmusic import upload_drumless_track, setup_ytmusic_auth
 
 
 def _emergency_cleanup(signum=None, frame=None):
@@ -55,17 +35,29 @@ def _emergency_cleanup(signum=None, frame=None):
 
     # 2. Kill the entire process group (any other child workers or subprocesses)
     try:
-        os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
+        if os.name == "nt":
+            import subprocess
+            subprocess.run(
+                ["taskkill", "/PID", str(os.getpid()), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        else:
+            os.killpg(os.getpgid(os.getpid()), signal.SIGKILL)
     except Exception:
         pass
 
     # 3. Terminate self
+    if os.name == "nt":
+        os._exit(130)
     os.kill(os.getpid(), signal.SIGKILL)
 
 
 def register_signal_handlers():
     """Traps all interrupt and suspend signals (Ctrl+C, Ctrl+Z, SIGQUIT, SIGTERM, SIGHUP)."""
-    for sig in [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT, signal.SIGHUP]:
+    available = [getattr(signal, name, None) for name in ("SIGINT", "SIGTERM", "SIGQUIT", "SIGHUP")]
+    for sig in (value for value in available if value is not None):
         try:
             signal.signal(sig, _emergency_cleanup)
         except Exception:
@@ -78,12 +70,19 @@ def register_signal_handlers():
             pass
 
 
-# Register immediately on module load
-register_signal_handlers()
 
 
 def main():
-    register_signal_handlers()
+    if sys.argv[1:2] == ["gui-worker"]:
+        from makeitdrumless.gui_worker import main as worker_main
+        worker_main()
+        return
+    _cli_main()
+
+
+def _cli_main(argv=None, install_signal_handlers=True):
+    if install_signal_handlers:
+        register_signal_handlers()
 
     print("\n🥁 === MakeItDrumless === 🥁\n")
 
@@ -194,6 +193,11 @@ Examples:
         help="Automatically upload the generated drumless track to your YouTube Music library."
     )
     parser.add_argument(
+        "--_worker-result",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--setup-ytmusic",
         action="store_true",
         help="Run interactive YouTube Music authentication setup wizard and exit."
@@ -203,20 +207,23 @@ Examples:
         help="Custom path to YouTube Music authentication JSON file (default: ~/.config/makeitdrumless/ytmusic_auth.json)."
     )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # 1. Handle --setup-ytmusic
     if args.setup_ytmusic:
+        from makeitdrumless.ytmusic.auth import setup_ytmusic_auth
         setup_ytmusic_auth(output_path=args.ytmusic_auth)
         return
 
     # 2. Handle --list-models
     if args.list_models:
+        from makeitdrumless.msst_integration.models import list_available_models
         list_available_models()
         return
 
     # 3. Handle --download-model
     if args.download_model:
+        from makeitdrumless.msst_integration.models import download_model_preset
         model_name = args.download_model.strip()
         print(f"📥 Downloading model preset: {model_name}...")
         try:
@@ -228,6 +235,15 @@ Examples:
             print(f"❌ Failed to download model: {e}")
             sys.exit(1)
         return
+
+    # Load the processing stack only for actual generation. GUI library and
+    # settings requests can then start without importing Torch and MSST.
+    from makeitdrumless.msst_integration.models import normalize_preset_name
+    from makeitdrumless.msst_integration.inference import separate_stems_msst
+    from makeitdrumless.audio.downloader import get_audio_input, get_default_output_base, clean_audio_title, parse_artist_title
+    from makeitdrumless.audio.processing import mix_stems_without_drums, set_mp3_metadata, ensemble_stems
+    from makeitdrumless.ffmpeg.manager import setup_ffmpeg_binary
+    from makeitdrumless.ytmusic import upload_drumless_track
 
     # 4. Setup FFmpeg
     setup_ffmpeg_binary()
@@ -405,6 +421,18 @@ Examples:
         print(f"  👥 Decrowded Audio: {decrowded_wav}")
     print(f"  🎛️ Separated Stems: {stems_dir}\n")
 
+    result = {
+        "track_dir": track_dir,
+        "stems_dir": stems_dir,
+        "drumless_path": out_mp3_path,
+        "title": out_title or safe_title,
+        "artist": out_artist,
+        "model": model_display_name,
+        "stems": stems,
+    }
+    if args._worker_result:
+        print("__MAKEITDRUMLESS_RESULT__" + json.dumps(result, ensure_ascii=False), flush=True)
+
     # Final cleanup to ensure no memory or background handles remain
     import gc
     gc.collect()
@@ -415,6 +443,7 @@ Examples:
             torch.mps.empty_cache()
     except Exception:
         pass
+    return result
 
 
 if __name__ == "__main__":

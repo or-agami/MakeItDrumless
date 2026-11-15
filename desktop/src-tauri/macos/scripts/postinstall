@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+APP="/Applications/MakeItDrumless.app"
+CLI="$APP/Contents/MacOS/makeitdrumless"
+DEST="/usr/local/bin/makeitdrumless"
+if [ -x "$CLI" ]; then
+  mkdir -p /usr/local/bin
+  ln -sf "$CLI" "$DEST"
+fi
+exit 0

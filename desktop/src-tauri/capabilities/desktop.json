@@ -1,0 +1,24 @@
+{
+  "identifier": "desktop",
+  "description": "Minimum permissions for the MakeItDrumless desktop UI",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "process:allow-restart",
+    "dialog:allow-open",
+    "store:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/makeitdrumless-worker",
+          "sidecar": true,
+          "args": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420"
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": [
+      "binaries/makeitdrumless-worker",
+      "binaries/makeitdrumless",
+      "binaries/makeitdrumless-ffmpeg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "installerHooks": "windows/hooks.nsh"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    }
+  },
+  "productName": "MakeItDrumless",
+  "version": "0.1.0",
+  "identifier": "com.makeitdrumless.desktop",
+  "plugins": {
+    "process": {
+      "active": true
+    }
+  },
+  "app": {
+    "security": {
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": []
+      }
+    },
+    "windows": [
+      {
+        "title": "MakeItDrumless",
+        "width": 1360,
+        "height": 900,
+        "minWidth": 900,
+        "minHeight": 620,
+        "dragDropEnabled": false
+      }
+    ]
+  }
+}

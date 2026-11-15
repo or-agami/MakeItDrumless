@@ -225,3 +225,9 @@ git push origin main
 ## 📄 License
 
 This project is licensed under the [MIT License](LICENSE).
+
+## Desktop App
+
+A Tauri desktop app is available in [`desktop/`](desktop/README.md). It adds a generated-track library, local-file and YouTube generation, YouTube Music upload, synchronized multitrack playback, waveform seeking and zoom, keyboard controls, and settings.
+
+The desktop installer bundles the Python CLI and FFmpeg for Windows x64, macOS Apple Silicon, and Linux x64, and exposes `makeitdrumless` on the command path. See [`desktop/README.md`](desktop/README.md) for development and packaging steps.
