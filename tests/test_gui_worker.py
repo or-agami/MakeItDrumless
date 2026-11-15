@@ -66,6 +66,25 @@ class LibraryDiscoveryTests(unittest.TestCase):
         self.assertEqual([item["title"] for item in scan_library(str(self.root))], ["First Library Song"])
         self.assertEqual([item["title"] for item in scan_library(str(other))], ["Second Library Song"])
 
+    def test_manifest_uses_existing_mix_when_cli_path_is_stale(self) -> None:
+        folder = self.root / "Safe Song Title"
+        folder.mkdir()
+        drumless = folder / "Safe Song Title (Drumless).mp3"
+        drumless.write_bytes(b"generated audio")
+        stems_dir = folder / "stems_model"
+        stems_dir.mkdir()
+        request = {"source": {"kind": "file", "value": "input.wav"}, "model": "model"}
+
+        manifest = gui_worker._write_manifest({
+            "track_dir": str(folder),
+            "stems_dir": str(stems_dir),
+            "drumless_path": str(folder / "Original Title (Drumless).mp3"),
+            "stems": {},
+        }, request)
+
+        self.assertEqual(manifest["drumless_path"], str(drumless.resolve()))
+        self.assertTrue((folder / MANIFEST_NAME).is_file())
+
 
 class WorkerProtocolTests(unittest.TestCase):
     def test_list_items_returns_one_jsonl_result(self) -> None:

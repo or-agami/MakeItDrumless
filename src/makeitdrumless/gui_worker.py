@@ -400,9 +400,17 @@ def _write_manifest(result: dict[str, Any], request: dict[str, Any]) -> dict[str
     stems_dir = Path(result["stems_dir"]).resolve()
     stems = result.get("stems", {})
     tracks = []
-    drumless = Path(result["drumless_path"]).resolve()
+    drumless = Path(result["drumless_path"]).expanduser()
+    if not drumless.is_absolute():
+        drumless = track_dir / drumless
+    drumless = drumless.resolve()
     if not drumless.is_file():
-        raise RuntimeError("The CLI completed without creating the drumless mix file.")
+        # The CLI's reported path can differ from the final safe title used for
+        # the output filename. Recover the actual mix from the known track dir.
+        candidates = sorted(track_dir.glob("* (Drumless).mp3")) if track_dir.is_dir() else []
+        if not candidates:
+            raise RuntimeError("The CLI completed without creating the drumless mix file.")
+        drumless = candidates[0].resolve()
     if drumless.is_file():
         tracks.append({"id": "no_drums", "name": "No drums", "path": str(drumless), "duration": _get_duration(drumless), "kind": "mix"})
     for name, raw_path in stems.items():

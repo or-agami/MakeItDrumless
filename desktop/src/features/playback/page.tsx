@@ -2,8 +2,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import MultiTrack from "wavesurfer-multitrack";
 import { ArrowLeft, ChevronDown, Disc3, LoaderCircle, Pause, Play, RotateCcw, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent, UIEvent } from "react";
-import { useLocation, useNavigate, useParams } from "react-router";
+import type { CSSProperties, PointerEvent, UIEvent, WheelEvent } from "react";
+import { useLocation, useNavigate } from "react-router";
 import { getPreferences, type ShortcutMap } from "@/features/settings/preferences";
 import { runWorker } from "@/features/worker/client";
 import type { LibraryItem, StemTrack } from "@/features/worker/types";
@@ -11,9 +11,23 @@ import type { LibraryItem, StemTrack } from "@/features/worker/types";
 const colors: Record<string, string> = { no_drums: "#b9f36b", drums: "#f28c78", vocals: "#83b7fa", bass: "#c8a0ef", other: "#e0c47f", piano: "#82d7c3", guitar: "#e4a87b" };
 const normalName = (value: string) => value.toLowerCase().replace(/ /g, "_").replace(/-/g, "_");
 const formatTime = (seconds: number) => `${Math.floor(Math.max(0, seconds) / 60)}:${String(Math.floor(Math.max(0, seconds) % 60)).padStart(2, "0")}`;
+const formatPreciseTime = (seconds: number) => {
+  const centiseconds = Math.floor(Math.max(0, seconds) * 100);
+  const wholeSeconds = Math.floor(centiseconds / 100);
+  return `${Math.floor(wholeSeconds / 60)}:${String(wholeSeconds % 60).padStart(2, "0")}.${String(centiseconds % 100).padStart(2, "0")}`;
+};
 
-function WaveCanvas({ track, peaks, duration, width, zoom, currentTime, onSeek }: {
-  track: StemTrack; peaks: number[]; duration: number; width: number; zoom: number; currentTime: number; onSeek: (time: number) => void;
+function WaveCanvas({ track, peaks, duration, width, zoom, currentTime, onPointerDown, onPointerMove, onPointerUp, onPointerLeave }: {
+  track: StemTrack;
+  peaks: number[];
+  duration: number;
+  width: number;
+  zoom: number;
+  currentTime: number;
+  onPointerDown: (event: PointerEvent<HTMLCanvasElement>) => void;
+  onPointerMove: (event: PointerEvent<HTMLCanvasElement>) => void;
+  onPointerUp: (event: PointerEvent<HTMLCanvasElement>) => void;
+  onPointerLeave: () => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const color = colors[normalName(track.id)] ?? "#94a5a6";
@@ -49,13 +63,7 @@ function WaveCanvas({ track, peaks, duration, width, zoom, currentTime, onSeek }
     context.globalAlpha = 1;
   }, [color, currentTime, duration, peaks, track.duration, width, zoom]);
 
-  const seekFromPointer = (event: MouseEvent<HTMLCanvasElement>) => {
-    const rect = event.currentTarget.getBoundingClientRect();
-    const x = Math.min(width, Math.max(0, event.clientX - rect.left));
-    onSeek(Math.min(duration, Math.max(0, x / zoom)));
-  };
-
-  return <canvas ref={canvasRef} className="wave-canvas" onClick={seekFromPointer} aria-label={`${track.name} waveform`} role="slider" aria-valuemin={0} aria-valuemax={Math.round(duration)} />;
+  return <canvas ref={canvasRef} className="wave-canvas" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp} onPointerLeave={onPointerLeave} aria-label={`${track.name} waveform`} role="slider" aria-valuemin={0} aria-valuemax={Math.round(duration)} />;
 }
 
 function getTicks(duration: number, zoom: number) {
@@ -63,11 +71,11 @@ function getTicks(duration: number, zoom: number) {
   return Array.from({ length: Math.floor(duration / step) + 1 }, (_, index) => index * step);
 }
 
-export function PlaybackPage() {
-  const { itemId = "" } = useParams();
+export function PlaybackPage({ itemId, isVisible }: { itemId: string; isVisible: boolean }) {
   const navigate = useNavigate();
   const location = useLocation();
   const [item, setItem] = useState<LibraryItem | null>(null);
+  const [selectedItemId, setSelectedItemId] = useState("");
   const [tracks, setTracks] = useState<StemTrack[]>([]);
   const [peaksById, setPeaksById] = useState<Record<string, number[]>>({});
   const [volumes, setVolumes] = useState<Record<string, number>>({});
@@ -76,25 +84,55 @@ export function PlaybackPage() {
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [zoom, setZoom] = useState(26);
-  const [loading, setLoading] = useState(true);
+  const [viewportWidth, setViewportWidth] = useState(0);
+  const [hoveredTime, setHoveredTime] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
   const [peakStatus, setPeakStatus] = useState("Loading synchronized tracks and waveform peaks…");
   const [error, setError] = useState("");
   const playerRef = useRef<MultiTrack | null>(null);
   const audioHostRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
+  const waveScrollRef = useRef<HTMLDivElement>(null);
+  const seekingRef = useRef(false);
 
   const duration = Math.max(0, ...tracks.map((track) => track.duration ?? 0), item?.duration ?? 0);
-  const timelineWidth = Math.max(600, Math.ceil(duration * zoom));
+  const minZoom = duration > 0 && viewportWidth > 0 ? Math.min(10, viewportWidth / duration) : 10;
+  const effectiveZoom = Math.max(zoom, minZoom);
+  const timelineWidth = Math.max(1, viewportWidth, Math.ceil(duration * effectiveZoom));
 
   useEffect(() => {
+    if (itemId) setSelectedItemId(itemId);
+  }, [itemId]);
+
+  useEffect(() => {
+    if (!isVisible) setHoveredTime(null);
+  }, [isVisible]);
+
+  useEffect(() => {
+    const container = waveScrollRef.current;
+    if (!container) return;
+    const measure = () => {
+      const width = container.clientWidth;
+      if (width > 0) setViewportWidth(width);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [tracks.length]);
+
+  useEffect(() => {
+    if (!selectedItemId) return;
     let active = true;
     void (async () => {
-      setLoading(true); setError("");
+      playerRef.current?.pause();
+      setPlaying(false); setCurrentTime(0); setHoveredTime(null);
+      setLoading(true); setError(""); setItem(null); setTracks([]); setPeaksById({});
       try {
         const prefs = await getPreferences();
         setShortcuts(prefs.shortcuts);
         const result = await runWorker<{ items: LibraryItem[] }>({ operation: "list_items", output_dir: prefs.outputDir });
-        const match = result.items.find((candidate) => candidate.id === itemId || candidate.path === itemId);
+        const match = result.items.find((candidate) => candidate.id === selectedItemId || candidate.path === selectedItemId);
         if (!match) throw new Error("This generated item is no longer in the selected library folder.");
         if (!active) return;
         setItem(match);
@@ -119,7 +157,7 @@ export function PlaybackPage() {
       } finally { if (active) setLoading(false); }
     })();
     return () => { active = false; };
-  }, [itemId]);
+  }, [selectedItemId]);
 
   useEffect(() => {
     const host = audioHostRef.current;
@@ -137,7 +175,7 @@ export function PlaybackPage() {
       options: { backend: "MediaElement" as const, height: 5, interact: false, waveColor: "transparent", progressColor: "transparent", cursorWidth: 0, hideScrollbar: true },
     }));
     try {
-      const player = MultiTrack.create(audioTracks, { container: host, minPxPerSec: zoom, cursorColor: "transparent", cursorWidth: 0, trackBackground: "transparent", trackBorderColor: "transparent" });
+      const player = MultiTrack.create(audioTracks, { container: host, minPxPerSec: effectiveZoom, cursorColor: "transparent", cursorWidth: 0, trackBackground: "transparent", trackBorderColor: "transparent" });
       playerRef.current = player;
       const poll = window.setInterval(() => {
         const time = player.getCurrentTime();
@@ -154,8 +192,8 @@ export function PlaybackPage() {
   }, [tracks, duration]);
 
   useEffect(() => {
-    playerRef.current?.zoom(zoom);
-  }, [zoom]);
+    playerRef.current?.zoom(effectiveZoom);
+  }, [effectiveZoom]);
 
   useEffect(() => {
     const player = playerRef.current;
@@ -183,9 +221,43 @@ export function PlaybackPage() {
   }, [playing]);
   const skip = useCallback((delta: number) => seek((playerRef.current?.getCurrentTime() ?? currentTime) + delta), [currentTime, seek]);
 
+  const getPointerTime = useCallback((event: PointerEvent<HTMLElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.min(timelineWidth, Math.max(0, event.clientX - rect.left));
+    return Math.min(duration, Math.max(0, x / effectiveZoom));
+  }, [duration, effectiveZoom, timelineWidth]);
+  const beginTimelineSeek = useCallback((event: PointerEvent<HTMLElement>) => {
+    if (!duration || event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    seekingRef.current = true;
+    const time = getPointerTime(event);
+    setHoveredTime(time);
+    seek(time);
+  }, [duration, getPointerTime, seek]);
+  const moveTimelinePointer = useCallback((event: PointerEvent<HTMLElement>) => {
+    if (!duration) return;
+    const time = getPointerTime(event);
+    setHoveredTime(time);
+    if (seekingRef.current) seek(time);
+  }, [duration, getPointerTime, seek]);
+  const endTimelineSeek = useCallback((event: PointerEvent<HTMLElement>) => {
+    seekingRef.current = false;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }, []);
+  const leaveTimeline = useCallback(() => {
+    if (!seekingRef.current) setHoveredTime(null);
+  }, []);
+  const timelineWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if (!event.metaKey && !event.ctrlKey) return;
+    event.preventDefault();
+    const factor = Math.exp(-event.deltaY * 0.002);
+    const maxZoom = Math.max(52, minZoom);
+    setZoom((value) => Math.min(maxZoom, Math.max(minZoom, value * factor)));
+  };
+
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
-      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
+      if (!isVisible || event.repeat || event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target as HTMLElement | null;
       if (target?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "BUTTON"].includes(target?.tagName ?? "")) return;
       const action = (Object.keys(shortcuts) as Array<keyof ShortcutMap>).find((key) => shortcuts[key] === event.code);
@@ -198,21 +270,24 @@ export function PlaybackPage() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [restart, shortcuts, skip, toggle]);
+  }, [isVisible, restart, shortcuts, skip, toggle]);
 
   const rulerScroll = (event: UIEvent<HTMLDivElement>) => {
-    if (rulerRef.current) rulerRef.current.scrollLeft = event.currentTarget.scrollLeft;
+    const source = event.currentTarget;
+    if (source === rulerRef.current && waveScrollRef.current) waveScrollRef.current.scrollLeft = source.scrollLeft;
+    if (source === waveScrollRef.current && rulerRef.current) rulerRef.current.scrollLeft = source.scrollLeft;
   };
-  const ticks = getTicks(duration, zoom);
+  const ticks = getTicks(duration, effectiveZoom);
+  const loadingTrack = loading || (!item && Boolean(itemId));
   const mixBadge = location.state?.uploadStatus === "failed" || item?.upload_status === "failed";
   const humanDate = item ? new Date(item.created_at).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" }) : "";
 
   return (
     <section className="page play-page">
-      <div className="play-topbar">
+      {item || loadingTrack || error ? <div className="play-topbar">
         <div className="track-heading">
           <button className="mb-2 inline-flex items-center gap-1 border-0 bg-transparent p-0 text-[10px] text-[#8f949d] hover:text-white" onClick={() => navigate("/")}><ArrowLeft size={12} /> Library</button>
-          <h1 title={item?.title}>{item?.title || "Loading track…"}</h1>
+          <h1 title={item?.title}>{item?.title || (loadingTrack ? "Loading track…" : "")}</h1>
           <p className="page-subtitle !mt-1">{item?.artist || `${item?.model ?? ""} · ${humanDate}`}</p>
         </div>
         <div className="transport" aria-label="Playback controls">
@@ -222,25 +297,26 @@ export function PlaybackPage() {
           <button className="skip-button" title="Forward 10 seconds" onClick={() => skip(10)}><ChevronDown className="-rotate-90" size={14} /><span>10</span></button>
         </div>
         <div className="time-readout"><strong>{formatTime(currentTime)}</strong><span className="mx-2 text-[#555b65]">/</span>{formatTime(duration)}</div>
-      </div>
+      </div> : null}
 
       {error && <div className="inline-error mt-5">{error}</div>}
       {mixBadge && <div className="inline-error mt-5">The stems were generated, but the YouTube Music upload failed. Your files remain in the library; check Settings before your next upload.</div>}
-      {loading && !item ? (
+      {loadingTrack && !item ? (
         <div className="track-loading"><LoaderCircle size={18} className="mr-2 animate-spin" color="#b9f36b" /> {peakStatus}</div>
       ) : item && tracks.length > 0 ? (
         <div className="play-content">
           <div className="play-summary">
             <p>{tracks.length} aligned tracks <span className="mx-2 text-[#545a63]">·</span> Only the no-drums mix is on by default{loading && <span className="ml-3 inline-flex items-center gap-1.5 text-[#a8d875]"><LoaderCircle size={11} className="animate-spin" />{peakStatus}</span>}</p>
-            <div className="zoom-control"><span>Zoom</span><input aria-label="Timeline zoom" type="range" min="10" max="52" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><span>{zoom} px/s</span></div>
+            <div className="zoom-control"><span>Zoom</span><input aria-label="Timeline zoom" type="range" min={minZoom} max={Math.max(52, minZoom)} step="any" value={effectiveZoom} onChange={(event) => setZoom(Number(event.target.value))} /><span>{effectiveZoom.toFixed(1)} px/s</span></div>
           </div>
-          <div className="mixer">
+          <div className="mixer" onWheel={timelineWheel}>
             <div className="mixer-head">
               <div className="track-head-label">Track / level</div>
-              <div className="ruler-scroll" ref={rulerRef}>
-                <div className="ruler-canvas" style={{ width: timelineWidth }}>
-                  {ticks.map((time) => <div key={time} className="ruler-tick" style={{ left: time * zoom }}>{formatTime(time)}</div>)}
-                  <div className="track-playhead" style={{ left: currentTime * zoom }} />
+              <div className="ruler-scroll" ref={rulerRef} onScroll={rulerScroll}>
+                <div className="ruler-canvas" style={{ width: timelineWidth }} onPointerDown={beginTimelineSeek} onPointerMove={moveTimelinePointer} onPointerUp={endTimelineSeek} onPointerCancel={endTimelineSeek} onPointerLeave={leaveTimeline}>
+                  {ticks.map((time) => <div key={time} className="ruler-tick" style={{ left: time * effectiveZoom }}>{formatTime(time)}</div>)}
+                  <div className="track-playhead" style={{ left: currentTime * effectiveZoom }}><span className="playhead-label">{formatPreciseTime(currentTime)}</span></div>
+                  {hoveredTime != null && Math.abs(hoveredTime - currentTime) > 0.25 && <div className="track-playhead hovered" style={{ left: hoveredTime * effectiveZoom }}><span className="playhead-label">{formatPreciseTime(hoveredTime)}</span></div>}
                 </div>
               </div>
             </div>
@@ -258,12 +334,13 @@ export function PlaybackPage() {
                   );
                 })}
               </div>
-              <div className="wave-scroll" onScroll={rulerScroll}>
+              <div className="wave-scroll" ref={waveScrollRef} onScroll={rulerScroll}>
                 <div style={{ width: timelineWidth }}>
                   {tracks.map((track) => (
                     <div className="wave-track" key={track.id}>
-                      <WaveCanvas track={track} peaks={peaksById[track.id] ?? []} duration={duration} width={timelineWidth} zoom={zoom} currentTime={currentTime} onSeek={seek} />
-                      <div className="track-playhead" style={{ left: currentTime * zoom }} />
+                      <WaveCanvas track={track} peaks={peaksById[track.id] ?? []} duration={duration} width={timelineWidth} zoom={effectiveZoom} currentTime={currentTime} onPointerDown={beginTimelineSeek} onPointerMove={moveTimelinePointer} onPointerUp={endTimelineSeek} onPointerLeave={leaveTimeline} />
+                      <div className="track-playhead" style={{ left: currentTime * effectiveZoom }} />
+                      {hoveredTime != null && <div className="track-playhead hovered" style={{ left: hoveredTime * effectiveZoom }} />}
                     </div>
                   ))}
                 </div>
@@ -273,7 +350,7 @@ export function PlaybackPage() {
           <div className="play-actions"><span className="kicker">Tip · Lower the drum stem to blend live playing with the original rhythm.</span><span className="mix-badge"><Disc3 size={12} /> Local playback</span></div>
           <div className="hidden-audio-host" ref={audioHostRef} aria-hidden="true" />
         </div>
-      ) : !error ? <div className="track-loading">No separated stems were found for this item.</div> : null}
+      ) : error ? null : !item ? <div className="surface empty-state player-empty-state"><div className="empty-icon"><Disc3 size={26} /></div><h2>Nothing loaded yet.</h2><p>Choose a generated track from your library or make a new practice mix to start listening.</p><button className="action-button" onClick={() => navigate("/")}><ArrowLeft size={14} /> Browse library</button></div> : <div className="track-loading">No separated stems were found for this item.</div>}
     </section>
   );
 }

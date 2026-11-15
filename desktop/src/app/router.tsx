@@ -8,7 +8,8 @@ const router = createBrowserRouter([
     children: [
       { index: true, lazy: () => import("@/features/library/page") },
       { path: "generate", lazy: () => import("@/features/generate/page") },
-      { path: "play/:itemId", lazy: () => import("@/features/playback/page") },
+      { path: "play", element: null },
+      { path: "play/:itemId", element: null },
       { path: "settings", lazy: () => import("@/features/settings/page") },
     ],
   },
